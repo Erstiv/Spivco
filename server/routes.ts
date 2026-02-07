@@ -122,6 +122,10 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
   }
 
   articleBody.find("style, nav, footer, iframe, header, aside, form, button").remove();
+  articleBody.find("[data-testid='vertical-collection'], .siteCollection, [class*='OUTBRAIN'], [id*='OUTBRAIN']").remove();
+  articleBody.find("ol:has(li a[data-testid='item-link'])").remove();
+  articleBody.find("video, [class*='video-player'], [class*='video-object']").remove();
+  articleBody.find("[class*='ad '], [class*='ad-'], [id*='banner'], [data-ad-label]").remove();
 
   stripPaywall(cheerio.load(articleBody.html() || ""));
 
@@ -194,6 +198,37 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
           "Referer": "https://www.google.com/",
         },
       });
+
+      if (botResponse.statusCode === 200) {
+        return { html: botResponse.body, statusCode: 200 };
+      }
+
+      console.log(`Googlebot also blocked (${botResponse.statusCode}). Trying social media bot UA...`);
+      const socialBotUAs = [
+        "facebookexternalhit/1.1",
+        "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+      ];
+
+      for (const ua of socialBotUAs) {
+        try {
+          const socialResponse = await fetch(url, {
+            headers: {
+              "User-Agent": ua,
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            redirect: "follow",
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (socialResponse.ok) {
+            const html = await socialResponse.text();
+            if (html.length > 1000) {
+              console.log(`Social bot UA (${ua.split("/")[0]}) got through! (${html.length} bytes)`);
+              return { html, statusCode: 200 };
+            }
+          }
+        } catch {}
+      }
 
       return { html: botResponse.body, statusCode: botResponse.statusCode };
     }

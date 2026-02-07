@@ -5,7 +5,7 @@
 Project Spiv is a web content extraction tool — a "web scraper" with a noir/spy aesthetic. Users paste a URL, and the app uses a four-layer extraction strategy to fetch and clean page content. Think of it as a read-it-later / paywall-bypass style reader.
 
 ### Extraction Pipeline (4 strategies, in order):
-1. **Front Door** — Browser impersonation via `got-scraping` (TLS fingerprint spoofing) + Googlebot UA fallback
+1. **Front Door** — Browser impersonation via `got-scraping` (TLS fingerprint spoofing) + Googlebot UA fallback + social media bot UA fallback (facebookexternalhit, Slackbot). The social bot UAs bypass Cloudflare on many sites (e.g. Politico) because sites whitelist them for link preview generation.
 2. **The Mercenary** — Jina.ai reader proxy (`r.jina.ai`) handles headless browsing remotely, returns clean Markdown. Bypasses paywalls and JS-rendered sites.
 3. **Heavy Hitter (The Tank)** — Headless Chromium browser via Playwright with anti-automation detection bypass, renders JavaScript, waits for Cloudflare challenges, strips paywalls from live DOM
 4. **The Archive** — Wayback Machine archive lookup via Internet Archive API (last resort)
