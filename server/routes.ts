@@ -2,8 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
 import { marked } from "marked";
-import puppeteer from "puppeteer-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { chromium } from "playwright";
 
 let _gotScraping: typeof import("got-scraping").gotScraping | null = null;
 async function getGotScraping() {
@@ -14,10 +13,7 @@ async function getGotScraping() {
   return _gotScraping;
 }
 
-puppeteer.use(StealthPlugin());
-
 const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
-const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
 
 function stripPaywall($: cheerio.CheerioAPI) {
   const paywallSelectors = [
@@ -261,54 +257,28 @@ async function getViaMercenary(url: string): Promise<{ title: string; content: s
 async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> {
   let browser;
   try {
-    browser = await puppeteer.launch({
-      executablePath: CHROMIUM_PATH,
+    browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-zygote",
-        "--single-process",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-default-apps",
-        "--disable-sync",
-        "--disable-translate",
-        "--mute-audio",
-        "--hide-scrollbars",
-      ],
+      args: ["--disable-blink-features=AutomationControlled"],
     });
 
-    const page = await browser.newPage();
-
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    );
-
-    await page.setExtraHTTPHeaders({
-      "Accept-Language": "en-US,en;q=0.9",
-      "Referer": "https://www.google.com/",
+    const context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+      },
     });
 
-    await page.setViewport({ width: 1920, height: 1080 });
-
-    await page.setRequestInterception(true);
-    page.on("request", (req) => {
-      const type = req.resourceType();
-      if (["image", "media", "font", "stylesheet"].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    const page = await context.newPage();
 
     await page.goto(url, {
-      waitUntil: "networkidle2",
+      waitUntil: "domcontentloaded",
       timeout: 30000,
     });
+
+    await page.waitForTimeout(3000);
 
     const needsWait = await page.evaluate(() => {
       const title = document.title.toLowerCase();
@@ -325,16 +295,16 @@ async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> 
     if (needsWait) {
       console.log("Cloudflare challenge detected. Waiting for resolution...");
       try {
-        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 });
+        await page.waitForURL("**/*", { timeout: 15000, waitUntil: "domcontentloaded" });
       } catch {
-        await new Promise(r => setTimeout(r, 8000));
+        await page.waitForTimeout(8000);
       }
     }
 
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight / 2);
     });
-    await new Promise(r => setTimeout(r, 1500));
+    await page.waitForTimeout(1500);
 
     await page.evaluate(() => {
       const selectors = [
