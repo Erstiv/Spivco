@@ -1,10 +1,18 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
-import { gotScraping } from "got-scraping";
 import { marked } from "marked";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+
+let _gotScraping: typeof import("got-scraping").gotScraping | null = null;
+async function getGotScraping() {
+  if (!_gotScraping) {
+    const mod = await import("got-scraping");
+    _gotScraping = mod.gotScraping;
+  }
+  return _gotScraping;
+}
 
 puppeteer.use(StealthPlugin());
 
@@ -146,6 +154,7 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
 
 async function scrapeLive(url: string): Promise<{ html: string; statusCode: number }> {
   try {
+    const gotScraping = await getGotScraping();
     const response = await gotScraping({
       url,
       headerGeneratorOptions: {
@@ -193,6 +202,7 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
 
 async function getViaMercenary(url: string): Promise<{ title: string; content: string } | null> {
   try {
+    const gotScraping = await getGotScraping();
     const jinaUrl = `https://r.jina.ai/${url}`;
     const response = await gotScraping({
       url: jinaUrl,
@@ -372,6 +382,7 @@ async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> 
 
 async function getFromArchive(url: string): Promise<{ html: string; archiveUrl: string } | null> {
   try {
+    const gotScraping = await getGotScraping();
     const apiUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
     const apiResponse = await gotScraping({
       url: apiUrl,
@@ -387,6 +398,7 @@ async function getFromArchive(url: string): Promise<{ html: string; archiveUrl: 
 
     const snapshotUrl: string = snapshot.url;
     const archiveResponse = await gotScraping({
+
       url: snapshotUrl,
       timeout: { request: 15000 },
       followRedirect: true,
