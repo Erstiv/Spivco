@@ -39,8 +39,9 @@ export default function Home() {
         body: JSON.stringify({ url }),
       });
 
+      const body = await res.json().catch(() => ({ error: "Unknown error" }));
+
       if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: "Unknown error" }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -56,7 +57,7 @@ export default function Home() {
 
       await new Promise(r => setTimeout(r, 400));
 
-      const result: FetchedDoc = await res.json();
+      const result: FetchedDoc = body;
 
       addLog("Extraction complete.");
       setData(result);
