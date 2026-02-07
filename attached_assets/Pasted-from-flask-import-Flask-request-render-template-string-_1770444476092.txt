@@ -1,0 +1,90 @@
+from flask import Flask, request, render_template_string
+import requests
+from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+# --- THE SPIV'S TOOLKIT ---
+# The disguise. We tell the website we are Google's search bot.
+# Most sites roll out the red carpet for this guy.
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "Referer": "https://www.google.com/"
+}
+
+# The Layout (Simple, clean, 'Underworld' vibes)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Spiv</title>
+    <style>
+        body { font-family: 'Courier New', monospace; max-width: 800px; margin: 40px auto; padding: 20px; background: #f4f1ea; color: #333; }
+        h1 { text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex-grow: 1; padding: 10px; border: 1px solid #333; font-family: inherit; }
+        button { padding: 10px 20px; background: #333; color: #fff; border: none; cursor: pointer; font-family: inherit; font-weight: bold; }
+        button:hover { background: #555; }
+        .article-content { line-height: 1.6; font-size: 18px; background: #fff; padding: 40px; box-shadow: 5px 5px 0px #333; border: 1px solid #333; }
+        .meta { color: #666; font-size: 0.9em; margin-bottom: 20px; font-style: italic; }
+        a { color: #d35400; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <h1>🕵️ Project Spiv</h1>
+    
+    <form method="POST" class="input-group">
+        <input type="text" name="url" placeholder="Paste the target URL here..." required>
+        <button type="submit">Fetch</button>
+    </form>
+
+    {% if content %}
+        <div class="article-content">
+            <div class="meta">Smuggled from: {{ source }}</div>
+            {{ content | safe }}
+        </div>
+    {% endif %}
+    
+    {% if error %}
+        <div style="color: red; text-align: center;"><strong>The Job Went South:</strong> {{ error }}</div>
+    {% endif %}
+</body>
+</html>
+"""
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        target_url = request.form.get('url')
+        try:
+            # 1. THE APPROACH (Making contact)
+            response = requests.get(target_url, headers=HEADERS, timeout=10)
+            response.raise_for_status()
+            
+            # 2. THE CLEANUP (Stripping the wires)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove the "guards" (scripts, styles, ads, nav bars)
+            for junk in soup(['script', 'style', 'nav', 'footer', 'iframe', 'header', 'aside']):
+                junk.decompose()
+            
+            # 3. THE GOODS (Extracting the body)
+            # This is a brute-force grab. It looks for the biggest chunk of text.
+            # In V2, we can get smarter about this.
+            article_body = soup.find('article') 
+            if not article_body:
+                # Fallback: finding the main content div if <article> tag is missing
+                article_body = soup.find('main') or soup.find('div', class_=lambda x: x and 'content' in x) or soup.body
+
+            # Convert images to absolute links so they don't break (optional polish)
+            # For now, let's just keep the text to keep it fast.
+            
+            return render_template_string(HTML_TEMPLATE, content=article_body.prettify(), source=target_url)
+
+        except Exception as e:
+            return render_template_string(HTML_TEMPLATE, error=str(e))
+
+    return render_template_string(HTML_TEMPLATE)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
