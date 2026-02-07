@@ -2,12 +2,14 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
 import { gotScraping } from "got-scraping";
+import { marked } from "marked";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
 puppeteer.use(StealthPlugin());
 
 const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
 
 function stripPaywall($: cheerio.CheerioAPI) {
   const paywallSelectors = [
@@ -189,7 +191,62 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
   }
 }
 
-const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
+async function getViaMercenary(url: string): Promise<{ title: string; content: string } | null> {
+  try {
+    const jinaUrl = `https://r.jina.ai/${url}`;
+    const response = await gotScraping({
+      url: jinaUrl,
+      timeout: { request: 25000 },
+      followRedirect: true,
+      throwHttpErrors: false,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    if (response.statusCode !== 200) {
+      console.log(`Mercenary returned HTTP ${response.statusCode}`);
+      return null;
+    }
+
+    const text = response.body;
+
+    if (
+      text.includes("To verify you are a human") ||
+      text.includes("Enable JavaScript and cookies") ||
+      text.includes("Just a moment") ||
+      text.includes("Checking if the site connection is secure")
+    ) {
+      console.log("Mercenary was blocked by target.");
+      return null;
+    }
+
+    if (text.trim().length < 100) {
+      console.log("Mercenary returned too little content.");
+      return null;
+    }
+
+    let title = "Untitled Document";
+    const titleMatch = text.match(/^Title:\s*(.+)$/m);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    }
+
+    let markdownBody = text;
+    const contentStart = text.indexOf("Markdown Content:");
+    if (contentStart !== -1) {
+      markdownBody = text.substring(contentStart + "Markdown Content:".length).trim();
+    }
+
+    const htmlContent = await marked.parse(markdownBody);
+
+    return { title, content: htmlContent };
+  } catch (err: any) {
+    console.error("Mercenary error:", err.message);
+    return null;
+  }
+}
 
 async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> {
   let browser;
@@ -366,36 +423,41 @@ export async function registerRoutes(
 
     try {
       // STRATEGY 1: The Front Door (browser impersonation + Googlebot fallback)
-      const { html, statusCode } = await scrapeLive(url);
+      let frontDoorFailed = false;
+      try {
+        const { html, statusCode } = await scrapeLive(url);
 
-      if (statusCode === 200) {
-        const $ = cheerio.load(html);
-        const result = extractContent($, url);
+        if (statusCode === 200) {
+          const $ = cheerio.load(html);
+          const result = extractContent($, url);
 
-        const textLen = result.content.replace(/<[^>]*>/g, "").trim().length;
-        if (textLen > 200) {
-          return res.json({ ...result, source: url, method: "live" });
+          const textLen = result.content.replace(/<[^>]*>/g, "").trim().length;
+          if (textLen > 200) {
+            return res.json({ ...result, source: url, method: "live" });
+          }
+          console.log(`Live content too thin (${textLen} chars). Likely JS-rendered. Escalating...`);
+        } else {
+          console.log(`Front door returned HTTP ${statusCode}. Escalating...`);
         }
-        console.log(`Live content too thin (${textLen} chars). Likely JS-rendered. Escalating...`);
+        frontDoorFailed = true;
+      } catch (err: any) {
+        console.log(`Front door failed: ${err.message}. Escalating...`);
+        frontDoorFailed = true;
       }
 
-      // STRATEGY 2: The Back Door (Wayback Machine Archive)
-      console.log(`Trying Archive for ${url}...`);
-      const archive = await getFromArchive(url);
+      // STRATEGY 2: The Mercenary (Jina.ai reader)
+      if (frontDoorFailed) {
+        console.log(`Sending the Mercenary to ${url}...`);
+        const mercResult = await getViaMercenary(url);
 
-      if (archive) {
-        const $a = cheerio.load(archive.html);
-        const archiveResult = extractContent($a, url);
-        const archiveTextLen = archiveResult.content.replace(/<[^>]*>/g, "").trim().length;
-
-        if (archiveTextLen > 200) {
+        if (mercResult && mercResult.content.replace(/<[^>]*>/g, "").trim().length > 100) {
           return res.json({
-            ...archiveResult,
-            source: archive.archiveUrl,
-            method: "archive",
+            ...mercResult,
+            source: url,
+            method: "mercenary",
           });
         }
-        console.log(`Archive content too thin (${archiveTextLen} chars). Escalating to headless...`);
+        console.log("Mercenary came back empty. Trying headless browser...");
       }
 
       // STRATEGY 3: The Heavy Hitter (Headless Browser)
@@ -407,7 +469,7 @@ export async function registerRoutes(
         const headlessResult = extractContent($b, url);
         const headlessTextLen = headlessResult.content.replace(/<[^>]*>/g, "").trim().length;
 
-        if (headlessTextLen > 50) {
+        if (headlessTextLen > 100) {
           return res.json({
             ...headlessResult,
             source: url,
@@ -416,8 +478,26 @@ export async function registerRoutes(
         }
       }
 
+      // STRATEGY 4: The Archive (Wayback Machine — last resort)
+      console.log(`All active methods failed. Checking the Archive for ${url}...`);
+      const archive = await getFromArchive(url);
+
+      if (archive) {
+        const $a = cheerio.load(archive.html);
+        const archiveResult = extractContent($a, url);
+        const archiveTextLen = archiveResult.content.replace(/<[^>]*>/g, "").trim().length;
+
+        if (archiveTextLen > 100) {
+          return res.json({
+            ...archiveResult,
+            source: archive.archiveUrl,
+            method: "archive",
+          });
+        }
+      }
+
       return res.status(502).json({
-        error: "Target is locked down tight. All three strategies failed.",
+        error: "Target is locked down tight. All four strategies failed.",
       });
 
     } catch (err: any) {

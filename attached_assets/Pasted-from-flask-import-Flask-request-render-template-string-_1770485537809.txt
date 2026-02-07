@@ -1,0 +1,123 @@
+from flask import Flask, request, render_template_string
+import requests
+import markdown
+
+app = Flask(__name__)
+
+# --- THE STRATEGY ---
+# 1. The Front Door: Try to visit directly (rarely works on hard targets).
+# 2. The Mercenary: Ask Jina.ai to break in and bring us the text.
+# 3. The Archive: The last resort.
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Spiv v3.0 (Nuclear)</title>
+    <style>
+        body { font-family: 'Georgia', serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f4f1ea; color: #111; }
+        h1 { text-align: center; font-family: 'Courier New', monospace; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex-grow: 1; padding: 10px; border: 1px solid #333; font-family: 'Courier New', monospace; }
+        button { padding: 10px 20px; background: #333; color: #fff; border: none; cursor: pointer; font-weight: bold; }
+        button:hover { background: #555; }
+        .article-content { line-height: 1.8; font-size: 18px; background: #fff; padding: 40px; box-shadow: 5px 5px 0px #333; border: 1px solid #333; }
+        .status-tag { display: inline-block; padding: 5px 10px; font-family: sans-serif; font-size: 0.8em; margin-bottom: 20px; color: white; font-weight: bold; }
+        .status-mercenary { background: #8e44ad; } /* Purple for the Mercenary */
+        .status-archive { background: #d35400; }
+        .status-live { background: #27ae60; }
+        a { color: #d35400; text-decoration: none; }
+        img { max-width: 100%; height: auto; display: block; margin: 20px auto; }
+        blockquote { border-left: 4px solid #333; padding-left: 20px; margin-left: 0; color: #555; }
+    </style>
+</head>
+<body>
+    <h1>🕵️ Project Spiv <span style="font-size:0.5em">Nuclear</span></h1>
+    
+    <form method="POST" class="input-group">
+        <input type="text" name="url" placeholder="Target URL..." required>
+        <button type="submit">Execute</button>
+    </form>
+
+    {% if content %}
+        <div class="article-content">
+            {% if method == 'mercenary' %}
+                <div class="status-tag status-mercenary">⚡ Intel provided by The Mercenary (Jina)</div>
+            {% elif method == 'archive' %}
+                <div class="status-tag status-archive">⚠️ Retrieved from Archive</div>
+            {% else %}
+                <div class="status-tag status-live">✅ Direct Hit</div>
+            {% endif %}
+            
+            <div style="font-style: italic; color: #666; margin-bottom: 20px;">Source: {{ source }}</div>
+            
+            {{ content | safe }}
+        </div>
+    {% endif %}
+    
+    {% if error %}
+        <div style="color: red; text-align: center;"><strong>Mission Failed:</strong> {{ error }}</div>
+    {% endif %}
+</body>
+</html>
+"""
+
+def get_via_mercenary(url):
+    # This is the nuclear option. 
+    # We prepend 'https://r.jina.ai/' to the URL.
+    # Jina handles the headless browsing and returns Markdown.
+    jina_url = f"https://r.jina.ai/{url}"
+    response = requests.get(jina_url, headers=HEADERS)
+    
+    if "To verify you are a human" in response.text:
+        # Even the Mercenary got stopped (rare)
+        raise Exception("Mercenary Blocked")
+        
+    # Convert Jina's Markdown to HTML for pretty display
+    html_content = markdown.markdown(response.text)
+    return html_content
+
+def get_from_archive(url):
+    api_url = f"http://archive.org/wayback/available?url={url}"
+    try:
+        data = requests.get(api_url).json()
+        if data.get('archived_snapshots', {}).get('closest', {}):
+            snapshot_url = data['archived_snapshots']['closest']['url']
+            # We use the mercenary to read the ARCHIVE snapshot too (cleaner format)
+            return get_via_mercenary(snapshot_url), snapshot_url
+    except:
+        pass
+    return None, None
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        target_url = request.form.get('url')
+        content = None
+        method = 'mercenary'
+        
+        try:
+            # STRATEGY: GO NUCLEAR IMMEDIATELY
+            # For hard targets like Politico, we skip the polite knock
+            # and send the Mercenary straight away.
+            content = get_via_mercenary(target_url)
+
+        except Exception as e:
+            print(f"Mercenary failed ({e}). Checking Archive...")
+            content, archive_url = get_from_archive(target_url)
+            if content:
+                method = 'archive'
+                target_url = archive_url
+            else:
+                return render_template_string(HTML_TEMPLATE, error="Target is locked down tight. Not even the Mercenary could get in.")
+
+        return render_template_string(HTML_TEMPLATE, content=content, source=target_url, method=method)
+
+    return render_template_string(HTML_TEMPLATE)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)

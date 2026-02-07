@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, FileText, Loader2, ShieldAlert, VenetianMask, X, Archive, Wifi, Monitor } from "lucide-react";
+import { Search, FileText, Loader2, ShieldAlert, VenetianMask, X, Archive, Wifi, Monitor, Zap } from "lucide-react";
 
 interface FetchedDoc {
   title: string;
   source: string;
   content: string;
-  method: "live" | "archive" | "headless";
+  method: "live" | "mercenary" | "headless" | "archive";
 }
 
 export default function Home() {
@@ -46,15 +46,19 @@ export default function Home() {
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
-      if (body.method === "headless") {
-        addLog("Front door locked. Archive empty.");
+      if (body.method === "mercenary") {
+        addLog("Front door locked. Calling in the Mercenary...");
+        addLog("Routing through Jina reader proxy...");
+        addLog("Mercenary bypassed defenses. Intel secured.");
+      } else if (body.method === "headless") {
+        addLog("Front door locked. Mercenary blocked.");
         addLog("Deploying the heavy hitter...");
         addLog("Launching headless Chromium browser...");
         addLog("Rendering JavaScript. Waiting for page load...");
         addLog("Stripping paywalls from live DOM...");
         addLog("Content rendered and captured.");
       } else if (body.method === "archive") {
-        addLog("Front door locked. Trying the back door...");
+        addLog("All active methods failed. Checking the Archive...");
         addLog("Querying Wayback Machine archive...");
         addLog("Snapshot found. Retrieving cached version...");
       } else {
@@ -193,7 +197,11 @@ export default function Home() {
 
                 {/* Status Stamp */}
                 <div className="absolute top-4 right-4 md:top-8 md:right-8 rotate-12 opacity-80 pointer-events-none">
-                  {data.method === "headless" ? (
+                  {data.method === "mercenary" ? (
+                    <div className="border-4 border-purple-600 text-purple-600 px-4 py-1 font-display font-bold text-lg uppercase tracking-widest rounded-sm">
+                      Mercenary
+                    </div>
+                  ) : data.method === "headless" ? (
                     <div className="border-4 border-violet-600 text-violet-600 px-4 py-1 font-display font-bold text-lg uppercase tracking-widest rounded-sm">
                       Rendered
                     </div>
@@ -210,7 +218,12 @@ export default function Home() {
 
                 {/* Method Badge */}
                 <div className="mt-8 mb-4">
-                  {data.method === "headless" ? (
+                  {data.method === "mercenary" ? (
+                    <div className="inline-flex items-center gap-2 bg-purple-900/10 text-purple-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
+                      <Zap size={14} />
+                      Intel provided by The Mercenary.
+                    </div>
+                  ) : data.method === "headless" ? (
                     <div className="inline-flex items-center gap-2 bg-violet-900/10 text-violet-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
                       <Monitor size={14} />
                       Headless browser deployed. JavaScript rendered.
@@ -218,7 +231,7 @@ export default function Home() {
                   ) : data.method === "archive" ? (
                     <div className="inline-flex items-center gap-2 bg-amber-900/10 text-amber-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
                       <Archive size={14} />
-                      Front door locked. Retrieved from Archive.
+                      All active methods failed. Retrieved from Archive.
                     </div>
                   ) : (
                     <div className="inline-flex items-center gap-2 bg-green-900/10 text-green-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
@@ -247,7 +260,7 @@ export default function Home() {
 
                 <div className="mt-12 pt-6 border-t border-dotted border-foreground/40 text-center">
                   <p className="text-xs uppercase tracking-widest text-muted-foreground">
-                    Project Spiv v2.0 // End of File
+                    Project Spiv v3.0 Nuclear // End of File
                   </p>
                 </div>
               </article>
