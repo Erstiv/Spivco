@@ -26,11 +26,134 @@ const GOOGLEBOT_HEADERS = {
   "Referer": "https://www.google.com/",
 };
 
-function getHeaders(url: string) {
+const GOOGLE_CACHE_PREFIX = "https://webcache.googleusercontent.com/search?q=cache:";
+
+function getBrowserHeaders(url: string) {
   const parsed = new URL(url);
   return {
     ...BROWSER_HEADERS,
     "Referer": `https://www.google.com/search?q=site:${parsed.hostname}`,
+  };
+}
+
+async function attemptFetch(url: string, headers: Record<string, string>): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const response = await fetch(url, {
+    headers,
+    signal: controller.signal,
+    redirect: "follow",
+  });
+  clearTimeout(timeout);
+  return response;
+}
+
+function stripPaywall($: cheerio.CheerioAPI) {
+  const paywallSelectors = [
+    "[class*='paywall']", "[id*='paywall']",
+    "[class*='subscribe']", "[id*='subscribe']",
+    "[class*='subscription']", "[id*='subscription']",
+    "[class*='metered']", "[id*='metered']",
+    "[class*='piano']", "[id*='piano']",
+    "[class*='gate']", "[id*='gate']",
+    "[class*='regwall']", "[id*='regwall']",
+    "[class*='login-wall']", "[id*='login-wall']",
+    "[class*='premium-content']",
+    "[class*='truncated']",
+    "[class*='fade-out']", "[class*='fadeout']",
+    "[class*='gradient-overlay']",
+    "[class*='article-limit']",
+    "[class*='nag']", "[id*='nag']",
+    "[class*='prompt']", "[id*='prompt']",
+    "[class*='modal']", "[id*='modal']",
+    "[class*='overlay']", "[id*='overlay']",
+    "[class*='popup']", "[id*='popup']",
+    "[class*='cookie']", "[id*='cookie']",
+    "[class*='consent']", "[id*='consent']",
+    "[class*='newsletter']", "[id*='newsletter']",
+    "[class*='signup']", "[id*='signup']",
+    "[class*='ad-'], [class*='ads-'], [class*='advert']",
+    "[id*='ad-'], [id*='ads-']",
+  ];
+
+  $(paywallSelectors.join(", ")).remove();
+
+  $("*").each((_i, el) => {
+    const style = $(el).attr("style") || "";
+    if (
+      style.includes("overflow: hidden") ||
+      style.includes("overflow:hidden") ||
+      style.includes("max-height") ||
+      style.includes("-webkit-line-clamp")
+    ) {
+      $(el).attr("style", "");
+    }
+  });
+
+  $("*").each((_i, el) => {
+    const cls = $(el).attr("class") || "";
+    if (
+      /\btruncate\b/.test(cls) ||
+      /\bline-clamp/.test(cls) ||
+      /\boverflow-hidden\b/.test(cls)
+    ) {
+      $(el).removeClass("truncate line-clamp-1 line-clamp-2 line-clamp-3 line-clamp-4 line-clamp-5 overflow-hidden");
+    }
+  });
+}
+
+function extractContent($: cheerio.CheerioAPI, url: string) {
+  $("script, noscript, svg, [role='banner'], [role='navigation'], [role='complementary']").remove();
+
+  stripPaywall($);
+
+  let articleBody = $("article").first();
+  if (!articleBody.length) articleBody = $("main").first();
+  if (!articleBody.length) articleBody = $("[class*='article-body']").first();
+  if (!articleBody.length) articleBody = $("[class*='article-content']").first();
+  if (!articleBody.length) articleBody = $("[class*='story-body']").first();
+  if (!articleBody.length) articleBody = $("[class*='entry-content']").first();
+  if (!articleBody.length) articleBody = $("[itemprop='articleBody']").first();
+  if (!articleBody.length) articleBody = $("[class*='content']").first();
+  if (!articleBody.length) articleBody = $("[class*='post']").first();
+  if (!articleBody.length) articleBody = $("body");
+
+  articleBody.find("style, nav, footer, iframe, header, aside").remove();
+
+  stripPaywall(cheerio.load(articleBody.html() || ""));
+
+  articleBody.find("img").each((_i, el) => {
+    const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-lazy-src") || "";
+    if (src && !src.startsWith("http") && !src.startsWith("data:")) {
+      try {
+        $(el).attr("src", new URL(src, url).href);
+      } catch {}
+    } else if (src) {
+      $(el).attr("src", src);
+    }
+  });
+
+  articleBody.find("a").each((_i, el) => {
+    const href = $(el).attr("href");
+    if (href && !href.startsWith("http") && !href.startsWith("#") && !href.startsWith("mailto:") && !href.startsWith("javascript:")) {
+      try {
+        $(el).attr("href", new URL(href, url).href);
+      } catch {}
+    }
+    $(el).attr("target", "_blank");
+    $(el).attr("rel", "noopener noreferrer");
+  });
+
+  const title = $("meta[property='og:title']").attr("content")?.trim() ||
+                $("title").text().trim() ||
+                $("h1").first().text().trim() ||
+                articleBody.find("h1, h2").first().text().trim() ||
+                "Untitled Document";
+
+  return {
+    title,
+    source: url,
+    content: articleBody.html() || "",
   };
 }
 
@@ -53,23 +176,12 @@ export async function registerRoutes(
     }
 
     try {
-      async function attemptFetch(headers: Record<string, string>) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
-        const response = await fetch(url, {
-          headers,
-          signal: controller.signal,
-          redirect: "follow",
-        });
-        clearTimeout(timeout);
-        return response;
-      }
+      // Strategy: try Googlebot first (gets full content from paywall sites),
+      // then browser headers as fallback
+      let response = await attemptFetch(url, GOOGLEBOT_HEADERS);
 
-      // Strategy: try as a browser first, fallback to Googlebot on 403
-      let response = await attemptFetch(getHeaders(url));
-
-      if (response.status === 403) {
-        response = await attemptFetch(GOOGLEBOT_HEADERS);
+      if (response.status === 403 || response.status === 429) {
+        response = await attemptFetch(url, getBrowserHeaders(url));
       }
 
       if (!response.ok) {
@@ -84,64 +196,9 @@ export async function registerRoutes(
       const html = await response.text();
       const $ = cheerio.load(html);
 
-      // Remove the "guards" — scripts, styles, ads, nav bars, etc.
-      $("script, style, nav, footer, iframe, header, aside, noscript, [role='banner'], [role='navigation'], [role='complementary']").remove();
+      const result = extractContent($, url);
 
-      // Remove common ad/tracking elements
-      $("[class*='ad-'], [class*='ads-'], [class*='advert'], [id*='ad-'], [id*='ads-'], [class*='cookie'], [class*='popup'], [class*='modal'], [class*='overlay']").remove();
-
-      // Extract the main body
-      let articleBody = $("article").first();
-      if (!articleBody.length) {
-        articleBody = $("main").first();
-      }
-      if (!articleBody.length) {
-        articleBody = $("[class*='content']").first();
-      }
-      if (!articleBody.length) {
-        articleBody = $("[class*='post']").first();
-      }
-      if (!articleBody.length) {
-        articleBody = $("body");
-      }
-
-      // Convert relative image URLs to absolute
-      articleBody.find("img").each((_i, el) => {
-        const src = $(el).attr("src");
-        if (src && !src.startsWith("http") && !src.startsWith("data:")) {
-          try {
-            const absolute = new URL(src, url).href;
-            $(el).attr("src", absolute);
-          } catch {}
-        }
-      });
-
-      // Convert relative link URLs to absolute
-      articleBody.find("a").each((_i, el) => {
-        const href = $(el).attr("href");
-        if (href && !href.startsWith("http") && !href.startsWith("#") && !href.startsWith("mailto:") && !href.startsWith("javascript:")) {
-          try {
-            const absolute = new URL(href, url).href;
-            $(el).attr("href", absolute);
-          } catch {}
-        }
-        $(el).attr("target", "_blank");
-        $(el).attr("rel", "noopener noreferrer");
-      });
-
-      // Extract title
-      const title = $("title").text().trim() ||
-                    $("h1").first().text().trim() ||
-                    articleBody.find("h1, h2").first().text().trim() ||
-                    "Untitled Document";
-
-      const cleanedHtml = articleBody.html() || "";
-
-      return res.json({
-        title,
-        source: url,
-        content: cleanedHtml,
-      });
+      return res.json(result);
 
     } catch (err: any) {
       if (err.name === "AbortError") {
