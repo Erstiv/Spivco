@@ -1,52 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
+import { gotScraping } from "got-scraping";
 
-const BROWSER_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Cache-Control": "no-cache",
-  "Pragma": "no-cache",
-  "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
-  "Sec-Ch-Ua-Mobile": "?0",
-  "Sec-Ch-Ua-Platform": '"Windows"',
-  "Sec-Fetch-Dest": "document",
-  "Sec-Fetch-Mode": "navigate",
-  "Sec-Fetch-Site": "none",
-  "Sec-Fetch-User": "?1",
-  "Upgrade-Insecure-Requests": "1",
-};
-
-const GOOGLEBOT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.5",
-  "Referer": "https://www.google.com/",
-};
-
-const GOOGLE_CACHE_PREFIX = "https://webcache.googleusercontent.com/search?q=cache:";
-
-function getBrowserHeaders(url: string) {
-  const parsed = new URL(url);
-  return {
-    ...BROWSER_HEADERS,
-    "Referer": `https://www.google.com/search?q=site:${parsed.hostname}`,
-  };
-}
-
-async function attemptFetch(url: string, headers: Record<string, string>): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  const response = await fetch(url, {
-    headers,
-    signal: controller.signal,
-    redirect: "follow",
-  });
-  clearTimeout(timeout);
-  return response;
-}
+const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 
 function stripPaywall($: cheerio.CheerioAPI) {
   const paywallSelectors = [
@@ -157,6 +114,55 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
   };
 }
 
+async function scrapePage(url: string): Promise<{ html: string; statusCode: number }> {
+  // Attempt 1: got-scraping with browser-like TLS fingerprint (bypasses Cloudflare)
+  try {
+    const response = await gotScraping({
+      url,
+      headerGeneratorOptions: {
+        browsers: [{ name: "chrome", minVersion: 120 }],
+        locales: ["en-US"],
+        operatingSystems: ["windows"],
+      },
+      timeout: { request: 15000 },
+      followRedirect: true,
+      throwHttpErrors: false,
+      headers: {
+        "Referer": "https://www.google.com/",
+      },
+    });
+
+    if (response.statusCode === 200) {
+      return { html: response.body, statusCode: 200 };
+    }
+
+    // If browser impersonation gets blocked, try Googlebot
+    if (response.statusCode === 403 || response.statusCode === 429) {
+      const botResponse = await gotScraping({
+        url,
+        timeout: { request: 15000 },
+        followRedirect: true,
+        throwHttpErrors: false,
+        headers: {
+          "User-Agent": GOOGLEBOT_UA,
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+          "Referer": "https://www.google.com/",
+        },
+      });
+
+      return { html: botResponse.body, statusCode: botResponse.statusCode };
+    }
+
+    return { html: response.body, statusCode: response.statusCode };
+  } catch (err: any) {
+    if (err.code === "ETIMEDOUT" || err.message?.includes("timeout")) {
+      throw new Error("Connection timed out after 15 seconds.");
+    }
+    throw err;
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -176,32 +182,19 @@ export async function registerRoutes(
     }
 
     try {
-      // Strategy: try Googlebot first (gets full content from paywall sites),
-      // then browser headers as fallback
-      let response = await attemptFetch(url, GOOGLEBOT_HEADERS);
+      const { html, statusCode } = await scrapePage(url);
 
-      if (response.status === 403 || response.status === 429) {
-        response = await attemptFetch(url, getBrowserHeaders(url));
+      if (statusCode !== 200) {
+        return res.status(502).json({ error: `Target returned HTTP ${statusCode}. The site may be blocking automated access.` });
       }
 
-      if (!response.ok) {
-        return res.status(502).json({ error: `Target returned HTTP ${response.status}. The site may be blocking automated access.` });
-      }
-
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
-        return res.status(400).json({ error: "Target did not return HTML content." });
-      }
-
-      const html = await response.text();
       const $ = cheerio.load(html);
-
       const result = extractContent($, url);
 
       return res.json(result);
 
     } catch (err: any) {
-      if (err.name === "AbortError") {
+      if (err.message?.includes("timed out")) {
         return res.status(504).json({ error: "Connection timed out after 15 seconds." });
       }
       return res.status(500).json({ error: err.message || "Failed to fetch target." });
