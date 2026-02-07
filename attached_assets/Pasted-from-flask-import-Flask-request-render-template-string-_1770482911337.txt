@@ -1,0 +1,115 @@
+from flask import Flask, request, render_template_string
+import cloudscraper # <--- The new lockpick
+import requests
+from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+# Initialize the lockpick
+scraper = cloudscraper.create_scraper(
+    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+)
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Spiv v2.0</title>
+    <style>
+        body { font-family: 'Courier New', monospace; max-width: 800px; margin: 40px auto; padding: 20px; background: #f4f1ea; color: #333; }
+        h1 { text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex-grow: 1; padding: 10px; border: 1px solid #333; font-family: inherit; }
+        button { padding: 10px 20px; background: #333; color: #fff; border: none; cursor: pointer; font-weight: bold; }
+        button:hover { background: #555; }
+        .article-content { line-height: 1.6; font-size: 18px; background: #fff; padding: 40px; box-shadow: 5px 5px 0px #333; border: 1px solid #333; }
+        .status-tag { display: inline-block; padding: 5px 10px; background: #333; color: white; font-size: 0.8em; margin-bottom: 20px; }
+        .status-archive { background: #d35400; }
+        a { color: #d35400; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <h1>🕵️ Project Spiv <span style="font-size:0.5em">v2.0</span></h1>
+    
+    <form method="POST" class="input-group">
+        <input type="text" name="url" placeholder="Paste the target URL here..." required>
+        <button type="submit">Fetch</button>
+    </form>
+
+    {% if content %}
+        <div class="article-content">
+            {% if method == 'archive' %}
+                <div class="status-tag status-archive">⚠️ Front door locked. Retrieved from Archive.</div>
+            {% else %}
+                <div class="status-tag">✅ Live version secured.</div>
+            {% endif %}
+            
+            <div style="font-style: italic; color: #666; margin-bottom: 20px;">Source: {{ source }}</div>
+            {{ content | safe }}
+        </div>
+    {% endif %}
+    
+    {% if error %}
+        <div style="color: red; text-align: center;"><strong>The Job Went South:</strong> {{ error }}</div>
+    {% endif %}
+</body>
+</html>
+"""
+
+def clean_html(html_text):
+    soup = BeautifulSoup(html_text, 'html.parser')
+    # Remove the guards
+    for junk in soup(['script', 'style', 'nav', 'footer', 'iframe', 'header', 'aside', 'form', 'button']):
+        junk.decompose()
+    
+    # Try to find the meat of the article
+    article = soup.find('article') or soup.find('main') or soup.find('div', class_=lambda x: x and 'content' in x) or soup.body
+    return article.prettify() if article else "Could not extract text."
+
+def get_from_archive(url):
+    # Ask the Wayback Machine for the latest snapshot
+    api_url = f"http://archive.org/wayback/available?url={url}"
+    data = requests.get(api_url).json()
+    
+    if data.get('archived_snapshots', {}).get('closest', {}):
+        snapshot_url = data['archived_snapshots']['closest']['url']
+        # Fetch the snapshot
+        response = scraper.get(snapshot_url)
+        return response.text, snapshot_url
+    return None, None
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        target_url = request.form.get('url')
+        content = None
+        method = 'live'
+        
+        try:
+            # STRATEGY 1: The Front Door (Cloudscraper)
+            response = scraper.get(target_url)
+            
+            # Check if we got blocked (403 Forbidden or 429 Too Many Requests)
+            if response.status_code in [403, 429, 503]:
+                raise Exception("Blocked by Bouncer")
+                
+            content = clean_html(response.text)
+
+        except Exception as e:
+            # STRATEGY 2: The Back Door (Archive Loophole)
+            print(f"Direct hit failed ({e}). Trying Archive...")
+            archive_html, archive_url = get_from_archive(target_url)
+            
+            if archive_html:
+                content = clean_html(archive_html)
+                method = 'archive'
+                target_url = archive_url # Update source to show we got it from the vault
+            else:
+                return render_template_string(HTML_TEMPLATE, error="Target is locked down tight. Even the Archive is empty.")
+
+        return render_template_string(HTML_TEMPLATE, content=content, source=target_url, method=method)
+
+    return render_template_string(HTML_TEMPLATE)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)

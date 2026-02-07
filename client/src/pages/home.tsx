@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, FileText, Loader2, ShieldAlert, VenetianMask, X } from "lucide-react";
+import { Search, FileText, Loader2, ShieldAlert, VenetianMask, X, Archive, Wifi } from "lucide-react";
 
 interface FetchedDoc {
   title: string;
   source: string;
   content: string;
+  method: "live" | "archive";
 }
 
 export default function Home() {
@@ -29,7 +30,7 @@ export default function Home() {
     setLogs([]);
 
     addLog("Initiating connection to target...");
-    addLog("Spoofing User-Agent: Googlebot/2.1");
+    addLog("Spoofing TLS fingerprint: Chrome/131");
     addLog("Setting Referer: google.com");
 
     try {
@@ -45,22 +46,27 @@ export default function Home() {
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
-      addLog("Handshake successful. 200 OK.");
+      if (body.method === "archive") {
+        addLog("Front door locked. Trying the back door...");
+        addLog("Querying Wayback Machine archive...");
+        addLog("Snapshot found. Retrieving cached version...");
+      } else {
+        addLog("Handshake successful. 200 OK.");
+      }
+
       setStatus("cleaning");
       addLog("Parsing HTML with cheerio...");
 
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 500));
 
       addLog("Stripping scripts, ads, and trackers...");
-      addLog("Decomposing <nav>, <footer>, <aside>...");
+      addLog("Removing paywall overlays...");
       addLog("Resolving relative URLs...");
 
-      await new Promise(r => setTimeout(r, 400));
-
-      const result: FetchedDoc = body;
+      await new Promise(r => setTimeout(r, 300));
 
       addLog("Extraction complete.");
-      setData(result);
+      setData(body as FetchedDoc);
       setStatus("success");
     } catch (err: any) {
       setErrorMsg(err.message || "Connection failed.");
@@ -178,14 +184,35 @@ export default function Home() {
                   <X size={24} className="group-hover:rotate-90 transition-transform duration-300" />
                 </button>
 
-                {/* Meta Stamp */}
+                {/* Status Stamp */}
                 <div className="absolute top-4 right-4 md:top-8 md:right-8 rotate-12 opacity-80 pointer-events-none">
-                  <div className="border-4 border-accent text-accent px-4 py-1 font-display font-bold text-xl uppercase tracking-widest rounded-sm">
-                    Cleaned
-                  </div>
+                  {data.method === "archive" ? (
+                    <div className="border-4 border-amber-600 text-amber-600 px-4 py-1 font-display font-bold text-lg uppercase tracking-widest rounded-sm">
+                      Archive
+                    </div>
+                  ) : (
+                    <div className="border-4 border-accent text-accent px-4 py-1 font-display font-bold text-xl uppercase tracking-widest rounded-sm">
+                      Cleaned
+                    </div>
+                  )}
                 </div>
 
-                <div className="border-b border-foreground/20 pb-6 mb-8 mt-8">
+                {/* Method Badge */}
+                <div className="mt-8 mb-4">
+                  {data.method === "archive" ? (
+                    <div className="inline-flex items-center gap-2 bg-amber-900/10 text-amber-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
+                      <Archive size={14} />
+                      Front door locked. Retrieved from Archive.
+                    </div>
+                  ) : (
+                    <div className="inline-flex items-center gap-2 bg-green-900/10 text-green-800 px-3 py-1.5 text-xs font-bold uppercase tracking-wider" data-testid="badge-method">
+                      <Wifi size={14} />
+                      Live version secured.
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-b border-foreground/20 pb-6 mb-8">
                   <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
                     <FileText size={14} />
                     <span>Intercepted Content</span>
@@ -204,7 +231,7 @@ export default function Home() {
 
                 <div className="mt-12 pt-6 border-t border-dotted border-foreground/40 text-center">
                   <p className="text-xs uppercase tracking-widest text-muted-foreground">
-                    Project Spiv // End of File
+                    Project Spiv v2.0 // End of File
                   </p>
                 </div>
               </article>

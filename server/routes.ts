@@ -61,21 +61,46 @@ function stripPaywall($: cheerio.CheerioAPI) {
 
 function extractContent($: cheerio.CheerioAPI, url: string) {
   $("script, noscript, svg, [role='banner'], [role='navigation'], [role='complementary']").remove();
+  $("[id*='wm-ipp'], #wm-ipp-base, #wm-ipp-print, .wb-autocomplete-suggestions").remove();
 
   stripPaywall($);
 
-  let articleBody = $("article").first();
-  if (!articleBody.length) articleBody = $("main").first();
-  if (!articleBody.length) articleBody = $("[class*='article-body']").first();
-  if (!articleBody.length) articleBody = $("[class*='article-content']").first();
-  if (!articleBody.length) articleBody = $("[class*='story-body']").first();
-  if (!articleBody.length) articleBody = $("[class*='entry-content']").first();
-  if (!articleBody.length) articleBody = $("[itemprop='articleBody']").first();
-  if (!articleBody.length) articleBody = $("[class*='content']").first();
-  if (!articleBody.length) articleBody = $("[class*='post']").first();
-  if (!articleBody.length) articleBody = $("body");
+  const selectors = [
+    "article",
+    "main",
+    "[class*='article-body']",
+    "[class*='article-content']",
+    "[class*='story-body']",
+    "[class*='entry-content']",
+    "[itemprop='articleBody']",
+    "[class*='content']",
+    "[class*='post']",
+  ];
 
-  articleBody.find("style, nav, footer, iframe, header, aside").remove();
+  let articleBody: cheerio.Cheerio<any> | null = null;
+
+  for (const sel of selectors) {
+    const el = $(sel).first();
+    if (el.length && el.text().trim().length > 100) {
+      articleBody = el;
+      break;
+    }
+  }
+
+  if (!articleBody) {
+    let bestDiv: cheerio.Cheerio<any> | null = null;
+    let bestLen = 0;
+    $("div").each((_i, el) => {
+      const textLen = $(el).text().trim().length;
+      if (textLen > bestLen) {
+        bestLen = textLen;
+        bestDiv = $(el);
+      }
+    });
+    articleBody = bestDiv && bestLen > 100 ? bestDiv : $("body");
+  }
+
+  articleBody.find("style, nav, footer, iframe, header, aside, form, button").remove();
 
   stripPaywall(cheerio.load(articleBody.html() || ""));
 
@@ -109,13 +134,11 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
 
   return {
     title,
-    source: url,
     content: articleBody.html() || "",
   };
 }
 
-async function scrapePage(url: string): Promise<{ html: string; statusCode: number }> {
-  // Attempt 1: got-scraping with browser-like TLS fingerprint (bypasses Cloudflare)
+async function scrapeLive(url: string): Promise<{ html: string; statusCode: number }> {
   try {
     const response = await gotScraping({
       url,
@@ -136,8 +159,7 @@ async function scrapePage(url: string): Promise<{ html: string; statusCode: numb
       return { html: response.body, statusCode: 200 };
     }
 
-    // If browser impersonation gets blocked, try Googlebot
-    if (response.statusCode === 403 || response.statusCode === 429) {
+    if (response.statusCode === 403 || response.statusCode === 429 || response.statusCode === 503) {
       const botResponse = await gotScraping({
         url,
         timeout: { request: 15000 },
@@ -157,9 +179,42 @@ async function scrapePage(url: string): Promise<{ html: string; statusCode: numb
     return { html: response.body, statusCode: response.statusCode };
   } catch (err: any) {
     if (err.code === "ETIMEDOUT" || err.message?.includes("timeout")) {
-      throw new Error("Connection timed out after 15 seconds.");
+      throw new Error("Connection timed out.");
     }
     throw err;
+  }
+}
+
+async function getFromArchive(url: string): Promise<{ html: string; archiveUrl: string } | null> {
+  try {
+    const apiUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
+    const apiResponse = await gotScraping({
+      url: apiUrl,
+      timeout: { request: 10000 },
+      throwHttpErrors: false,
+      responseType: "json",
+    });
+
+    const data = apiResponse.body as any;
+    const snapshot = data?.archived_snapshots?.closest;
+
+    if (!snapshot?.url) return null;
+
+    const snapshotUrl: string = snapshot.url;
+    const archiveResponse = await gotScraping({
+      url: snapshotUrl,
+      timeout: { request: 15000 },
+      followRedirect: true,
+      throwHttpErrors: false,
+    });
+
+    if (archiveResponse.statusCode === 200) {
+      return { html: archiveResponse.body, archiveUrl: snapshotUrl };
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -182,16 +237,32 @@ export async function registerRoutes(
     }
 
     try {
-      const { html, statusCode } = await scrapePage(url);
+      // STRATEGY 1: The Front Door (browser impersonation + Googlebot fallback)
+      const { html, statusCode } = await scrapeLive(url);
 
-      if (statusCode !== 200) {
-        return res.status(502).json({ error: `Target returned HTTP ${statusCode}. The site may be blocking automated access.` });
+      if (statusCode === 200) {
+        const $ = cheerio.load(html);
+        const result = extractContent($, url);
+        return res.json({ ...result, source: url, method: "live" });
       }
 
-      const $ = cheerio.load(html);
-      const result = extractContent($, url);
+      // STRATEGY 2: The Back Door (Wayback Machine Archive)
+      console.log(`Direct hit failed (HTTP ${statusCode}). Trying Archive...`);
+      const archive = await getFromArchive(url);
 
-      return res.json(result);
+      if (archive) {
+        const $ = cheerio.load(archive.html);
+        const result = extractContent($, url);
+        return res.json({
+          ...result,
+          source: archive.archiveUrl,
+          method: "archive",
+        });
+      }
+
+      return res.status(502).json({
+        error: "Target is locked down tight. Even the Archive is empty.",
+      });
 
     } catch (err: any) {
       if (err.message?.includes("timed out")) {
