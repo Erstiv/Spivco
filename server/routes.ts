@@ -14,6 +14,7 @@ async function getGotScraping() {
 }
 
 const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
 
 function stripPaywall($: cheerio.CheerioAPI) {
   const paywallSelectors = [
@@ -41,6 +42,15 @@ function stripPaywall($: cheerio.CheerioAPI) {
     "[class*='signup']", "[id*='signup']",
     "[class*='ad-'], [class*='ads-'], [class*='advert']",
     "[id*='ad-'], [id*='ads-']",
+    "[class*='revcontent'], [class*='revcon']",
+    "[class*='sbn-'], [data-widget-host='revcontent']",
+    "[class*='taboola'], [id*='taboola']",
+    "[class*='outbrain'], [id*='outbrain']",
+    "[class*='related-articles'], [class*='recommended']",
+    "[class*='trinity-tts']",
+    ".share-facebook, .share-twitter, .share-reddit, .share-print",
+    ".sharedaddy, .sd-sharing-enabled",
+    "[class*='article-share'], [class*='article-bottom-share']",
   ];
 
   $(paywallSelectors.join(", ")).remove();
@@ -259,7 +269,8 @@ async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> 
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ["--disable-blink-features=AutomationControlled"],
+      executablePath: CHROMIUM_PATH,
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled", "--disable-gpu", "--disable-dev-shm-usage"],
     });
 
     const context = await browser.newContext({
@@ -314,6 +325,13 @@ async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> 
         "[class*='popup']", "[class*='cookie']",
         "[class*='consent']", "[class*='regwall']",
         "[class*='ad-']", "[class*='ads-']",
+        "[class*='revcontent']", "[class*='revcon']",
+        "[class*='sbn-']", "[data-widget-host='revcontent']",
+        "[class*='taboola']", "[id*='taboola']",
+        "[class*='outbrain']", "[id*='outbrain']",
+        "[class*='trinity-tts']",
+        "[class*='article-share']", "[class*='article-bottom-share']",
+        ".sharedaddy", ".sd-sharing-enabled",
       ];
       selectors.forEach((sel) => {
         document.querySelectorAll(sel).forEach((el) => el.remove());
@@ -413,11 +431,28 @@ export async function registerRoutes(
           const $ = cheerio.load(html);
           const result = extractContent($, url);
 
-          const textLen = result.content.replace(/<[^>]*>/g, "").trim().length;
-          if (textLen > 200) {
+          const plainText = result.content.replace(/<[^>]*>/g, "").trim();
+          const textLen = plainText.length;
+
+          const jsPlaceholders = [
+            "getting your trinity audio player ready",
+            "loading...",
+            "please enable javascript",
+            "this content requires javascript",
+            "subscriber exclusive",
+            "subscribe to continue reading",
+            "you must be a subscriber",
+          ];
+          const lowerText = plainText.toLowerCase();
+          const hasPlaceholder = jsPlaceholders.some(p => lowerText.includes(p));
+
+          const paragraphs = result.content.match(/<p[\s>]/gi) || [];
+          const hasMeaningfulStructure = paragraphs.length >= 3;
+
+          if (textLen > 500 && hasMeaningfulStructure && !hasPlaceholder) {
             return res.json({ ...result, source: url, method: "live" });
           }
-          console.log(`Live content too thin (${textLen} chars). Likely JS-rendered. Escalating...`);
+          console.log(`Live content insufficient (${textLen} chars, ${paragraphs.length} paragraphs, placeholder: ${hasPlaceholder}). Escalating...`);
         } else {
           console.log(`Front door returned HTTP ${statusCode}. Escalating...`);
         }
