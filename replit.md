@@ -2,7 +2,12 @@
 
 ## Overview
 
-Project Spiv is a web content extraction tool — a "web scraper" with a noir/spy aesthetic. Users paste a URL, and the app fetches the page content using spoofed headers (disguised as Googlebot), extracts the article text using Cheerio, and displays it in a clean, readable format. Think of it as a read-it-later / paywall-bypass style reader.
+Project Spiv is a web content extraction tool — a "web scraper" with a noir/spy aesthetic. Users paste a URL, and the app uses a three-layer extraction strategy to fetch and clean page content. Think of it as a read-it-later / paywall-bypass style reader.
+
+### Extraction Pipeline (3 strategies, in order):
+1. **Front Door** — Browser impersonation via `got-scraping` (TLS fingerprint spoofing) + Googlebot UA fallback
+2. **Back Door** — Wayback Machine archive lookup via Internet Archive API
+3. **Heavy Hitter** — Headless Chromium browser via `puppeteer-extra` + stealth plugin, renders JavaScript, waits for Cloudflare challenges, strips paywalls from live DOM
 
 The project is a full-stack TypeScript application with a React frontend and Express backend, originally inspired by a Python/Flask prototype (included in `attached_assets/`).
 
