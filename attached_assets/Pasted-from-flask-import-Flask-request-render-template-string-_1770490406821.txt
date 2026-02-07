@@ -1,0 +1,179 @@
+from flask import Flask, request, render_template_string
+import cloudscraper
+import requests
+import markdown
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+import time
+
+app = Flask(__name__)
+
+# --- THE ARSENAL ---
+
+# 1. THE SCOUT (Cloudscraper)
+scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+
+# 2. THE MERCENARY (Jina Headers)
+JINA_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Spiv: The General</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background: #222; color: #eee; }
+        h1 { text-align: center; font-family: 'Courier New', monospace; border-bottom: 2px solid #4caf50; padding-bottom: 10px; color: #4caf50; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex-grow: 1; padding: 15px; border: none; border-radius: 4px; font-size: 16px; background: #333; color: white; }
+        button { padding: 15px 30px; background: #4caf50; color: #fff; border: none; cursor: pointer; font-weight: bold; border-radius: 4px; }
+        button:hover { background: #45a049; }
+        .article-content { line-height: 1.8; font-size: 18px; background: #333; color: #ddd; padding: 50px; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .status-badge { display: inline-block; padding: 5px 12px; font-size: 0.85em; font-weight: bold; border-radius: 12px; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }
+        .badge-scout { background: #3498db; color: white; }
+        .badge-mercenary { background: #9b59b6; color: white; }
+        .badge-tank { background: #e67e22; color: white; }
+        .badge-archivist { background: #95a5a6; color: white; }
+        a { color: #4caf50; text-decoration: none; border-bottom: 1px dotted #4caf50; }
+        img { max-width: 100%; height: auto; display: block; margin: 20px auto; border-radius: 5px; opacity: 0.9; }
+        blockquote { border-left: 4px solid #4caf50; padding-left: 20px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <h1>🎖️ Project Spiv <span style="font-size:0.5em; color:#888">v4.0</span></h1>
+    
+    <form method="POST" class="input-group">
+        <input type="text" name="url" placeholder="Enter Target URL..." required>
+        <button type="submit">Deploy Agent</button>
+    </form>
+
+    {% if content %}
+        <div class="article-content">
+            {% if method == 'scout' %}
+                <span class="status-badge badge-scout">⚡ Level 1: The Scout (Fast)</span>
+            {% elif method == 'mercenary' %}
+                <span class="status-badge badge-mercenary">🕵️ Level 2: The Mercenary (AI)</span>
+            {% elif method == 'tank' %}
+                <span class="status-badge badge-tank">🚜 Level 3: The Tank (Heavy)</span>
+            {% elif method == 'archivist' %}
+                <span class="status-badge badge-archivist">📚 Level 4: The Archivist (Backup)</span>
+            {% endif %}
+            
+            <div style="font-style: italic; color: #888; margin-bottom: 20px; font-size: 0.9em;">Source: {{ source }}</div>
+            {{ content | safe }}
+        </div>
+    {% endif %}
+    
+    {% if error %}
+        <div style="background: #c0392b; color: white; padding: 20px; border-radius: 5px; text-align: center; font-weight: bold;">
+            🚫 Mission Critical Failure: {{ error }}
+        </div>
+    {% endif %}
+</body>
+</html>
+"""
+
+# --- LEVEL 1: THE SCOUT ---
+def attempt_scout(url):
+    try:
+        response = scraper.get(url, timeout=5)
+        if response.status_code != 200: return None
+        # Basic check: did we get a paywall login page?
+        if "subscriber" in response.text.lower() and len(response.text) < 15000:
+            return None # Likely a block
+        return clean_html(response.text)
+    except:
+        return None
+
+# --- LEVEL 2: THE MERCENARY ---
+def attempt_mercenary(url):
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        response = requests.get(jina_url, headers=JINA_HEADERS, timeout=10)
+        if "To verify you are a human" in response.text or response.status_code != 200:
+            return None
+        return markdown.markdown(response.text)
+    except:
+        return None
+
+# --- LEVEL 3: THE TANK ---
+def attempt_tank(url):
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+            page = context.new_page()
+            stealth_sync(page)
+            
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            time.sleep(3) # Let the paywall script fail
+            
+            content = page.content()
+            browser.close()
+            return clean_html(content)
+    except:
+        return None
+
+# --- LEVEL 4: THE ARCHIVIST ---
+def attempt_archivist(url):
+    try:
+        api_url = f"http://archive.org/wayback/available?url={url}"
+        data = requests.get(api_url).json()
+        if data.get('archived_snapshots', {}).get('closest', {}):
+            snapshot_url = data['archived_snapshots']['closest']['url']
+            # Use Mercenary to clean the Archive snapshot
+            return attempt_mercenary(snapshot_url), snapshot_url
+    except:
+        pass
+    return None, None
+
+def clean_html(html_text):
+    soup = BeautifulSoup(html_text, 'html.parser')
+    for junk in soup(['script', 'style', 'nav', 'footer', 'iframe', 'form', 'button', 'svg']):
+        junk.decompose()
+    article = soup.find('article') or soup.find('main') or soup.body
+    return article.prettify() if article else "Extraction Failed"
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        url = request.form.get('url')
+        content = None
+        method = None
+        
+        # ESCALATION LADDER
+        
+        # 1. Try Scout
+        # content = attempt_scout(url)
+        # if content: method = 'scout'
+        
+        # 2. If Scout failed, try Mercenary (Skipping Scout for now as Jina is better)
+        if not content:
+            print("Deploying Mercenary...")
+            content = attempt_mercenary(url)
+            if content: method = 'mercenary'
+            
+        # 3. If Mercenary failed, try Tank
+        if not content:
+            print("Mercenary failed. Deploying Tank...")
+            content = attempt_tank(url)
+            if content: method = 'tank'
+            
+        # 4. If Tank failed, try Archivist
+        if not content:
+            print("Tank failed. Checking Archives...")
+            content, archive_url = attempt_archivist(url)
+            if content: 
+                method = 'archivist'
+                url = archive_url
+
+        if content:
+            return render_template_string(HTML_TEMPLATE, content=content, source=url, method=method)
+        else:
+            return render_template_string(HTML_TEMPLATE, error="Target is impenetrable. All agents compromised.")
+
+    return render_template_string(HTML_TEMPLATE)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
