@@ -7,7 +7,7 @@ Project Spiv is a web content extraction tool — a "web scraper" with a noir/sp
 ### Extraction Pipeline (4 strategies, in order):
 1. **Front Door** — Browser impersonation via `got-scraping` (TLS fingerprint spoofing) + Googlebot UA fallback
 2. **The Mercenary** — Jina.ai reader proxy (`r.jina.ai`) handles headless browsing remotely, returns clean Markdown. Bypasses paywalls and JS-rendered sites.
-3. **Heavy Hitter** — Headless Chromium browser via `puppeteer-extra` + stealth plugin, renders JavaScript, waits for Cloudflare challenges, strips paywalls from live DOM
+3. **Heavy Hitter (The Tank)** — Headless Chromium browser via Playwright with anti-automation detection bypass, renders JavaScript, waits for Cloudflare challenges, strips paywalls from live DOM
 4. **The Archive** — Wayback Machine archive lookup via Internet Archive API (last resort)
 
 The project is a full-stack TypeScript application with a React frontend and Express backend, originally inspired by a Python/Flask prototype (included in `attached_assets/`).
