@@ -2,12 +2,37 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
 
-const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-  "Referer": "https://www.google.com/",
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
+  "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+};
+
+const GOOGLEBOT_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.5",
+  "Referer": "https://www.google.com/",
 };
+
+function getHeaders(url: string) {
+  const parsed = new URL(url);
+  return {
+    ...BROWSER_HEADERS,
+    "Referer": `https://www.google.com/search?q=site:${parsed.hostname}`,
+  };
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -28,18 +53,27 @@ export async function registerRoutes(
     }
 
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      async function attemptFetch(headers: Record<string, string>) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(url, {
+          headers,
+          signal: controller.signal,
+          redirect: "follow",
+        });
+        clearTimeout(timeout);
+        return response;
+      }
 
-      const response = await fetch(url, {
-        headers: HEADERS,
-        signal: controller.signal,
-        redirect: "follow",
-      });
-      clearTimeout(timeout);
+      // Strategy: try as a browser first, fallback to Googlebot on 403
+      let response = await attemptFetch(getHeaders(url));
+
+      if (response.status === 403) {
+        response = await attemptFetch(GOOGLEBOT_HEADERS);
+      }
 
       if (!response.ok) {
-        return res.status(502).json({ error: `Target returned HTTP ${response.status}` });
+        return res.status(502).json({ error: `Target returned HTTP ${response.status}. The site may be blocking automated access.` });
       }
 
       const contentType = response.headers.get("content-type") || "";
