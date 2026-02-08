@@ -1,7 +1,23 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import * as cheerio from "cheerio";
-import { marked } from "marked";
+import type * as cheerioTypes from "cheerio";
+
+let _cheerio: typeof import("cheerio") | null = null;
+async function getCheerio() {
+  if (!_cheerio) {
+    _cheerio = await import("cheerio");
+  }
+  return _cheerio;
+}
+
+let _marked: typeof import("marked").marked | null = null;
+async function getMarked() {
+  if (!_marked) {
+    const mod = await import("marked");
+    _marked = mod.marked;
+  }
+  return _marked;
+}
 
 let _gotScraping: typeof import("got-scraping").gotScraping | null = null;
 async function getGotScraping() {
@@ -15,7 +31,7 @@ async function getGotScraping() {
 const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
 
-function stripPaywall($: cheerio.CheerioAPI) {
+function stripPaywall($: cheerioTypes.CheerioAPI) {
   const paywallSelectors = [
     "[class*='paywall']", "[id*='paywall']",
     "[class*='subscribe']", "[id*='subscribe']",
@@ -80,7 +96,7 @@ function stripPaywall($: cheerio.CheerioAPI) {
   });
 }
 
-function extractContent($: cheerio.CheerioAPI, url: string) {
+async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
   $("script, noscript, svg, [role='banner'], [role='navigation'], [role='complementary']").remove();
   $("[id*='wm-ipp'], #wm-ipp-base, #wm-ipp-print, .wb-autocomplete-suggestions").remove();
   $("[data-testid='inline-message'], [class*='ad-wrapper'], [class*='AdWrapper']").remove();
@@ -100,7 +116,7 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
     "[class*='post']",
   ];
 
-  let articleBody: cheerio.Cheerio<any> | null = null;
+  let articleBody: cheerioTypes.Cheerio<any> | null = null;
 
   for (const sel of selectors) {
     const el = $(sel).first();
@@ -111,7 +127,7 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
   }
 
   if (!articleBody) {
-    let bestDiv: cheerio.Cheerio<any> | null = null;
+    let bestDiv: cheerioTypes.Cheerio<any> | null = null;
     let bestLen = 0;
     $("div").each((_i, el) => {
       const textLen = $(el).text().trim().length;
@@ -147,7 +163,8 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
     }
   });
 
-  stripPaywall(cheerio.load(articleBody.html() || ""));
+  const cheerioInner = await getCheerio();
+  stripPaywall(cheerioInner.load(articleBody.html() || ""));
 
   articleBody.find("img").each((_i, el) => {
     const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-lazy-src") || "";
@@ -311,6 +328,7 @@ async function getViaMercenary(url: string): Promise<{ title: string; content: s
       markdownBody = text.substring(contentStart + "Markdown Content:".length).trim();
     }
 
+    const marked = await getMarked();
     const htmlContent = await marked.parse(markdownBody);
 
     return { title, content: htmlContent };
@@ -493,8 +511,9 @@ export async function registerRoutes(
         const { html, statusCode } = await scrapeLive(url);
 
         if (statusCode === 200) {
+          const cheerio = await getCheerio();
           const $ = cheerio.load(html);
-          const result = extractContent($, url);
+          const result = await extractContent($, url);
 
           const plainText = result.content.replace(/<[^>]*>/g, "").trim();
           const textLen = plainText.length;
@@ -547,8 +566,9 @@ export async function registerRoutes(
       const browserResult = await scrapeWithBrowser(url);
 
       if (browserResult) {
+        const cheerio = await getCheerio();
         const $b = cheerio.load(browserResult.html);
-        const headlessResult = extractContent($b, url);
+        const headlessResult = await extractContent($b, url);
         const headlessTextLen = headlessResult.content.replace(/<[^>]*>/g, "").trim().length;
 
         if (headlessTextLen > 100) {
@@ -565,8 +585,9 @@ export async function registerRoutes(
       const archive = await getFromArchive(url);
 
       if (archive) {
+        const cheerio = await getCheerio();
         const $a = cheerio.load(archive.html);
-        const archiveResult = extractContent($a, url);
+        const archiveResult = await extractContent($a, url);
         const archiveTextLen = archiveResult.content.replace(/<[^>]*>/g, "").trim().length;
 
         if (archiveTextLen > 100) {
