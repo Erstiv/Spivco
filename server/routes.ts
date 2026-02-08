@@ -24,7 +24,8 @@ function stripPaywall($: cheerio.CheerioAPI) {
     "[class*='metered-paywall']", "[class*='metered-wall']", "[class*='meter-overlay']",
     "[id*='metered-paywall']", "[id*='metered-wall']",
     "[class*='piano']", "[id*='piano']",
-    "[class*='gate']", "[id*='gate']",
+    "[class*='paywall-gate']", "[class*='pay-gate']", "[class*='content-gate']",
+    "[class*='reggate']", "[id*='reggate']",
     "[class*='regwall']", "[id*='regwall']",
     "[class*='login-wall']", "[id*='login-wall']",
     "[class*='premium-content']",
@@ -83,6 +84,8 @@ function stripPaywall($: cheerio.CheerioAPI) {
 function extractContent($: cheerio.CheerioAPI, url: string) {
   $("script, noscript, svg, [role='banner'], [role='navigation'], [role='complementary']").remove();
   $("[id*='wm-ipp'], #wm-ipp-base, #wm-ipp-print, .wb-autocomplete-suggestions").remove();
+  $("[data-testid='inline-message'], [class*='ad-wrapper'], [class*='AdWrapper']").remove();
+  $("[class*='RelatedContent'], [data-testid='related-content']").remove();
 
   stripPaywall($);
 
@@ -126,6 +129,24 @@ function extractContent($: cheerio.CheerioAPI, url: string) {
   articleBody.find("ol:has(li a[data-testid='item-link'])").remove();
   articleBody.find("video, [class*='video-player'], [class*='video-object']").remove();
   articleBody.find("[class*='ad '], [class*='ad-'], [id*='banner'], [data-ad-label]").remove();
+  articleBody.find("[class*='skip-ad'], [class*='advert'], [class*='dfp']").remove();
+  articleBody.find("[class*='see-more'], [class*='SeeMore'], [class*='RelatedContent']").remove();
+  articleBody.find("[aria-label='advertisement'], [aria-label='Advertisement']").remove();
+
+  articleBody.find("p, a, span, div").each((_i, el) => {
+    const ownText = $(el).clone().children().remove().end().text().trim();
+    if (
+      ownText === "Advertisement" ||
+      ownText === "SKIP ADVERTISEMENT" ||
+      ownText === "Supported by" ||
+      ownText === "Related Content"
+    ) {
+      $(el).remove();
+    }
+    if (ownText.startsWith("See more on:")) {
+      $(el).remove();
+    }
+  });
 
   stripPaywall(cheerio.load(articleBody.html() || ""));
 
