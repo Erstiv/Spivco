@@ -92,5 +92,12 @@ migrations/       → Drizzle database migrations
 - **zod** + **drizzle-zod**: Schema validation
 
 ### External Services
-- No third-party APIs are currently integrated
+- **Jina.ai Reader** (`r.jina.ai`): Mercenary strategy for JS-rendered/paywalled sites
+- **Internet Archive Wayback Machine**: Archive fallback for last-resort content retrieval
 - Google Fonts CDN for typeface loading (Special Elite, Courier Prime)
+
+### Deployment Notes
+- **No external node_modules at runtime**: All server dependencies are bundled into `dist/index.cjs` via esbuild. Replit autoscale doesn't persist `node_modules` at runtime.
+- **cheerio** is bundled (~2.6mb) — this is the largest contributor to bundle size but necessary for HTML parsing.
+- **got-scraping** and **marked** were removed in favor of Node.js built-in `fetch` and a custom markdown parser to avoid CJS/ESM bundling issues.
+- **Playwright** is imported dynamically and is optional — it works in dev but may not be available in production deployments.

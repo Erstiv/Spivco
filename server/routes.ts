@@ -1,37 +1,54 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import type * as cheerioTypes from "cheerio";
+import * as cheerio from "cheerio";
 
-let _cheerio: typeof import("cheerio") | null = null;
-async function getCheerio() {
-  if (!_cheerio) {
-    _cheerio = await import("cheerio");
-  }
-  return _cheerio;
+const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+async function fetchWithTimeout(url: string, options: RequestInit & { timeout?: number } = {}): Promise<Response> {
+  const { timeout = 15000, ...fetchOptions } = options;
+  return fetch(url, {
+    ...fetchOptions,
+    signal: AbortSignal.timeout(timeout),
+    redirect: "follow",
+  });
 }
 
-let _marked: typeof import("marked").marked | null = null;
-async function getMarked() {
-  if (!_marked) {
-    const mod = await import("marked");
-    _marked = mod.marked;
+function markdownToHtml(md: string): string {
+  let html = md;
+  html = html.replace(/^######\s+(.+)$/gm, "<h6>$1</h6>");
+  html = html.replace(/^#####\s+(.+)$/gm, "<h5>$1</h5>");
+  html = html.replace(/^####\s+(.+)$/gm, "<h4>$1</h4>");
+  html = html.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
+  html = html.replace(/^---$/gm, "<hr>");
+  html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+  html = html.replace(/^(\d+)\. (.+)$/gm, "<li>$2</li>");
+  html = html.replace(/^> (.+)$/gm, "<blockquote>$1</blockquote>");
+  const lines = html.split("\n");
+  const result: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "") {
+      continue;
+    }
+    if (trimmed.startsWith("<h") || trimmed.startsWith("<hr") || trimmed.startsWith("<li") || trimmed.startsWith("<blockquote") || trimmed.startsWith("<img")) {
+      result.push(trimmed);
+    } else {
+      result.push(`<p>${trimmed}</p>`);
+    }
   }
-  return _marked;
-}
-
-let _gotScraping: typeof import("got-scraping").gotScraping | null = null;
-async function getGotScraping() {
-  if (!_gotScraping) {
-    const mod = await import("got-scraping");
-    _gotScraping = mod.gotScraping;
-  }
-  return _gotScraping;
+  return result.join("\n");
 }
 
 const GOOGLEBOT_UA = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 const CHROMIUM_PATH = "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
 
-function stripPaywall($: cheerioTypes.CheerioAPI) {
+function stripPaywall($: cheerio.CheerioAPI) {
   const paywallSelectors = [
     "[class*='paywall']", "[id*='paywall']",
     "[class*='subscribe']", "[id*='subscribe']",
@@ -96,7 +113,7 @@ function stripPaywall($: cheerioTypes.CheerioAPI) {
   });
 }
 
-async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
+async function extractContent($: cheerio.CheerioAPI, url: string) {
   $("script, noscript, svg, [role='banner'], [role='navigation'], [role='complementary']").remove();
   $("[id*='wm-ipp'], #wm-ipp-base, #wm-ipp-print, .wb-autocomplete-suggestions").remove();
   $("[data-testid='inline-message'], [class*='ad-wrapper'], [class*='AdWrapper']").remove();
@@ -116,7 +133,7 @@ async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
     "[class*='post']",
   ];
 
-  let articleBody: cheerioTypes.Cheerio<any> | null = null;
+  let articleBody: cheerio.Cheerio<any> | null = null;
 
   for (const sel of selectors) {
     const el = $(sel).first();
@@ -127,7 +144,7 @@ async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
   }
 
   if (!articleBody) {
-    let bestDiv: cheerioTypes.Cheerio<any> | null = null;
+    let bestDiv: cheerio.Cheerio<any> | null = null;
     let bestLen = 0;
     $("div").each((_i, el) => {
       const textLen = $(el).text().trim().length;
@@ -163,8 +180,7 @@ async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
     }
   });
 
-  const cheerioInner = await getCheerio();
-  stripPaywall(cheerioInner.load(articleBody.html() || ""));
+  stripPaywall(cheerio.load(articleBody.html() || ""));
 
   articleBody.find("img").each((_i, el) => {
     const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-lazy-src") || "";
@@ -202,32 +218,23 @@ async function extractContent($: cheerioTypes.CheerioAPI, url: string) {
 
 async function scrapeLive(url: string): Promise<{ html: string; statusCode: number }> {
   try {
-    const gotScraping = await getGotScraping();
-    const response = await gotScraping({
-      url,
-      headerGeneratorOptions: {
-        browsers: [{ name: "chrome", minVersion: 120 }],
-        locales: ["en-US"],
-        operatingSystems: ["windows"],
-      },
-      timeout: { request: 15000 },
-      followRedirect: true,
-      throwHttpErrors: false,
+    const response = await fetchWithTimeout(url, {
+      timeout: 15000,
       headers: {
+        "User-Agent": CHROME_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.google.com/",
       },
     });
 
-    if (response.statusCode === 200) {
-      return { html: response.body, statusCode: 200 };
+    if (response.ok) {
+      return { html: await response.text(), statusCode: 200 };
     }
 
-    if (response.statusCode === 403 || response.statusCode === 429 || response.statusCode === 503) {
-      const botResponse = await gotScraping({
-        url,
-        timeout: { request: 15000 },
-        followRedirect: true,
-        throwHttpErrors: false,
+    if (response.status === 403 || response.status === 429 || response.status === 503) {
+      const botResponse = await fetchWithTimeout(url, {
+        timeout: 15000,
         headers: {
           "User-Agent": GOOGLEBOT_UA,
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -236,11 +243,11 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
         },
       });
 
-      if (botResponse.statusCode === 200) {
-        return { html: botResponse.body, statusCode: 200 };
+      if (botResponse.ok) {
+        return { html: await botResponse.text(), statusCode: 200 };
       }
 
-      console.log(`Googlebot also blocked (${botResponse.statusCode}). Trying social media bot UA...`);
+      console.log(`Googlebot also blocked (${botResponse.status}). Trying social media bot UA...`);
       const socialBotUAs = [
         "facebookexternalhit/1.1",
         "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
@@ -248,13 +255,12 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
 
       for (const ua of socialBotUAs) {
         try {
-          const socialResponse = await fetch(url, {
+          const socialResponse = await fetchWithTimeout(url, {
+            timeout: 15000,
             headers: {
               "User-Agent": ua,
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             },
-            redirect: "follow",
-            signal: AbortSignal.timeout(15000),
           });
 
           if (socialResponse.ok) {
@@ -267,12 +273,14 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
         } catch {}
       }
 
-      return { html: botResponse.body, statusCode: botResponse.statusCode };
+      const fallbackBody = await botResponse.text().catch(() => "");
+      return { html: fallbackBody, statusCode: botResponse.status };
     }
 
-    return { html: response.body, statusCode: response.statusCode };
+    const body = await response.text().catch(() => "");
+    return { html: body, statusCode: response.status };
   } catch (err: any) {
-    if (err.code === "ETIMEDOUT" || err.message?.includes("timeout")) {
+    if (err.name === "TimeoutError" || err.message?.includes("timeout")) {
       throw new Error("Connection timed out.");
     }
     throw err;
@@ -281,25 +289,21 @@ async function scrapeLive(url: string): Promise<{ html: string; statusCode: numb
 
 async function getViaMercenary(url: string): Promise<{ title: string; content: string } | null> {
   try {
-    const gotScraping = await getGotScraping();
     const jinaUrl = `https://r.jina.ai/${url}`;
-    const response = await gotScraping({
-      url: jinaUrl,
-      timeout: { request: 25000 },
-      followRedirect: true,
-      throwHttpErrors: false,
+    const response = await fetchWithTimeout(jinaUrl, {
+      timeout: 25000,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": CHROME_UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
 
-    if (response.statusCode !== 200) {
-      console.log(`Mercenary returned HTTP ${response.statusCode}`);
+    if (!response.ok) {
+      console.log(`Mercenary returned HTTP ${response.status}`);
       return null;
     }
 
-    const text = response.body;
+    const text = await response.text();
 
     if (
       text.includes("To verify you are a human") ||
@@ -328,8 +332,7 @@ async function getViaMercenary(url: string): Promise<{ title: string; content: s
       markdownBody = text.substring(contentStart + "Markdown Content:".length).trim();
     }
 
-    const marked = await getMarked();
-    const htmlContent = await marked.parse(markdownBody);
+    const htmlContent = markdownToHtml(markdownBody);
 
     return { title, content: htmlContent };
   } catch (err: any) {
@@ -453,31 +456,22 @@ async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> 
 
 async function getFromArchive(url: string): Promise<{ html: string; archiveUrl: string } | null> {
   try {
-    const gotScraping = await getGotScraping();
     const apiUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
-    const apiResponse = await gotScraping({
-      url: apiUrl,
-      timeout: { request: 10000 },
-      throwHttpErrors: false,
-      responseType: "json",
-    });
+    const apiResponse = await fetchWithTimeout(apiUrl, { timeout: 10000 });
 
-    const data = apiResponse.body as any;
+    if (!apiResponse.ok) return null;
+
+    const data = await apiResponse.json() as any;
     const snapshot = data?.archived_snapshots?.closest;
 
     if (!snapshot?.url) return null;
 
     const snapshotUrl: string = snapshot.url;
-    const archiveResponse = await gotScraping({
+    const archiveResponse = await fetchWithTimeout(snapshotUrl, { timeout: 15000 });
 
-      url: snapshotUrl,
-      timeout: { request: 15000 },
-      followRedirect: true,
-      throwHttpErrors: false,
-    });
-
-    if (archiveResponse.statusCode === 200) {
-      return { html: archiveResponse.body, archiveUrl: snapshotUrl };
+    if (archiveResponse.ok) {
+      const html = await archiveResponse.text();
+      return { html, archiveUrl: snapshotUrl };
     }
 
     return null;
@@ -511,7 +505,6 @@ export async function registerRoutes(
         const { html, statusCode } = await scrapeLive(url);
 
         if (statusCode === 200) {
-          const cheerio = await getCheerio();
           const $ = cheerio.load(html);
           const result = await extractContent($, url);
 
@@ -566,7 +559,6 @@ export async function registerRoutes(
       const browserResult = await scrapeWithBrowser(url);
 
       if (browserResult) {
-        const cheerio = await getCheerio();
         const $b = cheerio.load(browserResult.html);
         const headlessResult = await extractContent($b, url);
         const headlessTextLen = headlessResult.content.replace(/<[^>]*>/g, "").trim().length;
@@ -585,7 +577,6 @@ export async function registerRoutes(
       const archive = await getFromArchive(url);
 
       if (archive) {
-        const cheerio = await getCheerio();
         const $a = cheerio.load(archive.html);
         const archiveResult = await extractContent($a, url);
         const archiveTextLen = archiveResult.content.replace(/<[^>]*>/g, "").trim().length;
