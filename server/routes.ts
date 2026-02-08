@@ -2,7 +2,6 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as cheerio from "cheerio";
 import { marked } from "marked";
-import { chromium } from "playwright";
 
 let _gotScraping: typeof import("got-scraping").gotScraping | null = null;
 async function getGotScraping() {
@@ -324,6 +323,15 @@ async function getViaMercenary(url: string): Promise<{ title: string; content: s
 async function scrapeWithBrowser(url: string): Promise<{ html: string } | null> {
   let browser;
   try {
+    let chromium;
+    try {
+      const pw = await import("playwright");
+      chromium = pw.chromium;
+    } catch {
+      console.log("Playwright not available, skipping headless browser strategy.");
+      return null;
+    }
+
     browser = await chromium.launch({
       headless: true,
       executablePath: CHROMIUM_PATH,
