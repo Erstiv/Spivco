@@ -119,9 +119,24 @@ async function extractContent($: cheerio.CheerioAPI, url: string) {
   $("[data-testid='inline-message'], [class*='ad-wrapper'], [class*='AdWrapper']").remove();
   $("[class*='RelatedContent'], [data-testid='related-content']").remove();
 
+  $("[data-testid='share-tools'], [data-testid='recirculation-placeholder']").remove();
+  $("[data-testid='recirc-firstPackage-placeholder'], [data-testid='recirc-defaultPackage-placeholder']").remove();
+  $("[data-testid='recirc-rightRail-placeholder'], [data-testid='recirc-item-placeholder']").remove();
+  $("[data-testid='lazy-loader'], [data-testid='inline-interactive']").remove();
+  $(".bottom-of-article, #bottom-wrapper, #top-wrapper, #bottom-sheet-sensor").remove();
+  $("[class*='interactive-content'], [class*='interactive-body']").remove();
+  $("[data-fdr-aa]").remove();
+
   stripPaywall($);
 
-  const selectors = [
+  const hostname = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const isNYT = hostname.includes("nytimes.com");
+
+  const selectors = isNYT ? [
+    "section[name='articleBody']",
+    "[itemprop='articleBody']",
+    "article",
+  ] : [
     "article",
     "main",
     "[class*='article-body']",
@@ -164,8 +179,14 @@ async function extractContent($: cheerio.CheerioAPI, url: string) {
   articleBody.find("[class*='skip-ad'], [class*='advert'], [class*='dfp']").remove();
   articleBody.find("[class*='see-more'], [class*='SeeMore'], [class*='RelatedContent']").remove();
   articleBody.find("[aria-label='advertisement'], [aria-label='Advertisement']").remove();
+  articleBody.find("[data-testid='share-tools'], [data-testid='recirculation-placeholder']").remove();
+  articleBody.find("[data-testid='inline-interactive'], [class*='interactive-content']").remove();
+  articleBody.find("#bottom-sheet-sensor, .bottom-of-article, #bottom-wrapper, #top-wrapper").remove();
+  articleBody.find("[data-fdr-aa], [data-testid='lazy-loader']").remove();
+  articleBody.find("[data-testid='Dropzone-1'], [data-testid='Dropzone-3'], [data-testid='Dropzone-5'], [data-testid='Dropzone-7']").remove();
+  articleBody.find("[data-testid^='Dropzone']").remove();
 
-  articleBody.find("p, a, span, div").each((_i, el) => {
+  articleBody.find("p, a, span, div, section, h2").each((_i, el) => {
     const ownText = $(el).clone().children().remove().end().text().trim();
     if (
       ownText === "Advertisement" ||
@@ -181,6 +202,16 @@ async function extractContent($: cheerio.CheerioAPI, url: string) {
   });
 
   stripPaywall(cheerio.load(articleBody.html() || ""));
+
+  if (isNYT) {
+    const cleanedHtml: string[] = [];
+    articleBody.find("div.StoryBodyCompanionColumn p, section[name='articleBody'] > div p").each((_i, el) => {
+      cleanedHtml.push($.html(el));
+    });
+    if (cleanedHtml.length > 3) {
+      articleBody = cheerio.load(`<div>${cleanedHtml.join("")}</div>`)("div").first();
+    }
+  }
 
   articleBody.find("img").each((_i, el) => {
     const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-lazy-src") || "";
